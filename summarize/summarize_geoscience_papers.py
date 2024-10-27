@@ -40,7 +40,6 @@ logger = logging.getLogger(__name__)
 def summarize_papers(csv_file):  # Modified to accept csv_file parameter
     MAX_RETRIES = 3
     RETRY_DELAY = 120  # 2 minutes base delay
-    counter = 1
     
     # Use passed csv_file parameter instead of hardcoded path
     df = pd.read_csv(csv_file)
@@ -52,8 +51,9 @@ def summarize_papers(csv_file):  # Modified to accept csv_file parameter
         logger.info("All papers have been summarized!")
         return
 
+    counter = 0
     while True:
-        paper_to_summarize = papers_to_summarize.iloc[0]
+        paper_to_summarize = papers_to_summarize.iloc[counter]
         
         prompt = f"""Summarize this scientific paper in a couple of sentences, focusing on:
          1. The main research question or objective
@@ -94,7 +94,7 @@ def summarize_papers(csv_file):  # Modified to accept csv_file parameter
                 df.loc[df['link'] == paper_to_summarize['link'], 'ai_abstract'] = summary
                 df.to_csv(csv_file, index=False)
                 
-                logger.info(f"Summarized paper {counter}/{len(papers_to_summarize)}: {paper_to_summarize['title']}")
+                logger.info(f"Summarized paper {counter + 1}/{len(papers_to_summarize)}: {paper_to_summarize['title']}")
                 logger.info(f"Summary: {summary[:200]}...")
                 
                 counter += 1
