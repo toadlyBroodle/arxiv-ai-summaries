@@ -9,6 +9,7 @@ import time
 import pytz  # Add this import at the top
 import google.api_core.exceptions
 from google.api_core import retry
+import argparse  # Add this import at the top
 
 # Load environment variables from .env file
 load_dotenv()
@@ -36,32 +37,28 @@ logging.basicConfig(
 logging.Formatter.converter = lambda *args: datetime.now(pst).timetuple()
 logger = logging.getLogger(__name__)
 
-def summarize_papers():
-    csv_file = 'arxiv-search/data/papers_all_geoscience.csv'
-    
-    # Initialize the counter
+def summarize_papers(csv_file):  # Modified to accept csv_file parameter
+    MAX_RETRIES = 3
+    RETRY_DELAY = 120  # 2 minutes base delay
     counter = 1
-    max_retries = 3
-    retry_delay = 120  # 2 minutes base delay
     
+    # Use passed csv_file parameter instead of hardcoded path
+    df = pd.read_csv(csv_file)
+
+    # load papers without an ai_abstract
+    papers_to_summarize = df[df['ai_abstract'].isna()] 
+    
+    if papers_to_summarize.empty:
+        logger.info("All papers have been summarized!")
+        return
+
     while True:
-        df = pd.read_csv(csv_file)
-        
-        # load papers without an ai_abstract
-        papers_to_summarize = df[df['ai_abstract'].isna()] 
-        
-        if papers_to_summarize.empty:
-            logger.info("All papers have been summarized!")
-            break
-            
         paper_to_summarize = papers_to_summarize.iloc[0]
         
         prompt = f"""Summarize this scientific paper in a couple of sentences, focusing on:
          1. The main research question or objective
          2. Key findings and conclusions
          3. Potential implications or applications
-
-        Do NOT begin with phrases like 'This paper' or 'This study'.
 
         Title: {paper_to_summarize['title']}
         Authors: {paper_to_summarize['authors']}
@@ -73,7 +70,7 @@ def summarize_papers():
 
         model = genai.GenerativeModel("gemini-1.5-flash")
         
-        for attempt in range(max_retries):
+        for attempt in range(MAX_RETRIES):
             try:
                 response = model.generate_content(prompt)
                 
@@ -100,16 +97,18 @@ def summarize_papers():
                 logger.info(f"Summarized paper {counter}/{len(papers_to_summarize)}: {paper_to_summarize['title']}")
                 logger.info(f"Summary: {summary[:200]}...")
                 
+                counter += 1
+
                 # Wait for 2 minutes before processing the next paper
                 if len(papers_to_summarize) > 1:
-                    time.sleep(retry_delay)
+                    time.sleep(RETRY_DELAY)
                 
                 break # Success - exit retry loop
                 
             except google.api_core.exceptions.ResourceExhausted as e:
-                logger.warning(f"Rate limit exceeded (attempt {attempt + 1}/{max_retries}): {str(e)}")
-                if attempt < max_retries - 1:
-                    wait_time = retry_delay * (attempt + 1)  # Exponential backoff
+                logger.warning(f"Rate limit exceeded (attempt {attempt + 1}/{MAX_RETRIES}): {str(e)}")
+                if attempt < MAX_RETRIES - 1:
+                    wait_time = RETRY_DELAY * (attempt + 1)  # Exponential backoff
                     logger.info(f"Waiting {wait_time} seconds before retry...")
                     time.sleep(wait_time)
                 else:
@@ -126,9 +125,9 @@ def summarize_papers():
                 break
                 
             except Exception as e:
-                logger.error(f"Unexpected error (attempt {attempt + 1}/{max_retries}): {str(e)}")
-                if attempt < max_retries - 1:
-                    wait_time = retry_delay * (attempt + 1)
+                logger.error(f"Unexpected error (attempt {attempt + 1}/{MAX_RETRIES}): {str(e)}")
+                if attempt < MAX_RETRIES - 1:
+                    wait_time = RETRY_DELAY * (attempt + 1)
                     logger.info(f"Waiting {wait_time} seconds before retry...")
                     time.sleep(wait_time)
                 else:
@@ -137,13 +136,18 @@ def summarize_papers():
                     df.to_csv(csv_file, index=False)
 
 if __name__ == "__main__":
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description='Summarize scientific papers using Gemini AI')
+    parser.add_argument('--csv_file', help='Path to the CSV file containing papers to summarize')
+    args = parser.parse_args()
+
     # Ensure new CSVs have ai_abstract, ai_summary columns
-    df = pd.read_csv('arxiv-search/data/papers_all_geoscience.csv')
+    df = pd.read_csv(args.csv_file)
     if 'ai_abstract' not in df.columns:
         df['ai_abstract'] = pd.Series(dtype='string')
-        df.to_csv('arxiv-search/data/papers_all_geoscience.csv', index=False)
+        df.to_csv(args.csv_file, index=False)
     if 'ai_summary' not in df.columns:
         df['ai_summary'] = pd.Series(dtype='string')
-        df.to_csv('arxiv-search/data/papers_all_geoscience.csv', index=False)
+        df.to_csv(args.csv_file, index=False)
     
-    summarize_papers()
+    summarize_papers(args.csv_file)
