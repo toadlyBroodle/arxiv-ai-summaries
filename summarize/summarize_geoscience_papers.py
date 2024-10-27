@@ -1,3 +1,4 @@
+import sys
 import logging
 from dotenv import load_dotenv
 import google.generativeai as genai
@@ -6,6 +7,8 @@ import pandas as pd
 from datetime import datetime
 import time
 import pytz  # Add this import at the top
+import google.api_core.exceptions
+from google.api_core import retry
 
 # Load environment variables from .env file
 load_dotenv()
@@ -38,11 +41,14 @@ def summarize_papers():
     
     # Initialize the counter
     counter = 1
+    max_retries = 3
+    retry_delay = 120  # 2 minutes base delay
+    
     while True:
-        df = pd.read_csv(csv_file)  # Reload the CSV each time to get latest state
+        df = pd.read_csv(csv_file)
         
-        # Find papers without an ai_abstract
-        papers_to_summarize = df[df['ai_abstract'].isna()]
+        # load papers without an ai_abstract
+        papers_to_summarize = df[df['ai_abstract'].isna()] 
         
         if papers_to_summarize.empty:
             logger.info("All papers have been summarized!")
@@ -66,36 +72,69 @@ def summarize_papers():
         """
 
         model = genai.GenerativeModel("gemini-1.5-flash")
-        try:
-            response = model.generate_content(prompt)
-            # Handle the response
-            if hasattr(response, 'text'):
-                summary = response.text.strip()
-            elif hasattr(response, 'parts'):
-                summary = ' '.join([part.text for part in response.parts]).strip()
-            else:
-                summary = str(response)
-            
-            # Update the CSV with the AI summary
-            df.loc[df['link'] == paper_to_summarize['link'], 'ai_abstract'] = summary
-            df.to_csv(csv_file, index=False)
-            
-            logger.info(f"Summarized paper {counter}/{len(papers_to_summarize)}: {paper_to_summarize['title']}")
-            logger.info(f"Summary: {summary[:200]}...")  # Log first 200 chars of summary
-            
-            # Wait for 2 minutes before processing the next paper
-            if len(papers_to_summarize) > 1:  # Only wait if there are more papers to process
-                time.sleep(120)
-            
-        except Exception as e:
-            logger.error(f"Error generating summary: {str(e)}")
-            # Store error message in CSV
-            #df.loc[df['link'] == paper_to_summarize['link'], 'ai_abstract'] = f"Error: {str(e)}"
-            #df.to_csv(csv_file, index=False)
-            
-            # Wait before trying the next paper
-            logger.info("Waiting 2mins...")
-            time.sleep(120)
+        
+        for attempt in range(max_retries):
+            try:
+                response = model.generate_content(prompt)
+                
+                # Check if the response was blocked
+                if response.prompt_feedback.block_reason:
+                    error_msg = f"Response blocked: {response.prompt_feedback.block_reason}"
+                    logger.error(error_msg)
+                    df.loc[df['link'] == paper_to_summarize['link'], 'ai_abstract'] = f"Error: {error_msg}"
+                    df.to_csv(csv_file, index=False)
+                    break
+
+                # Handle the response
+                if hasattr(response, 'text'):
+                    summary = response.text.strip()
+                elif hasattr(response, 'parts'):
+                    summary = ' '.join([part.text for part in response.parts]).strip()
+                else:
+                    summary = str(response)
+                
+                # Update the CSV with the AI summary
+                df.loc[df['link'] == paper_to_summarize['link'], 'ai_abstract'] = summary
+                df.to_csv(csv_file, index=False)
+                
+                logger.info(f"Summarized paper {counter}/{len(papers_to_summarize)}: {paper_to_summarize['title']}")
+                logger.info(f"Summary: {summary[:200]}...")
+                
+                # Wait for 2 minutes before processing the next paper
+                if len(papers_to_summarize) > 1:
+                    time.sleep(retry_delay)
+                
+                break # Success - exit retry loop
+                
+            except google.api_core.exceptions.ResourceExhausted as e:
+                logger.warning(f"Rate limit exceeded (attempt {attempt + 1}/{max_retries}): {str(e)}")
+                if attempt < max_retries - 1:
+                    wait_time = retry_delay * (attempt + 1)  # Exponential backoff
+                    logger.info(f"Waiting {wait_time} seconds before retry...")
+                    time.sleep(wait_time)
+                else:
+                    logger.error("Max retries exceeded for rate limit")
+                    df.loc[df['link'] == paper_to_summarize['link'], 'ai_abstract'] = f"Error: Rate limit exceeded"
+                    df.to_csv(csv_file, index=False)
+                    sys.exit(1)
+                    
+            except google.api_core.exceptions.InvalidArgument as e:
+                error_msg = f"Invalid argument error: {str(e)}"
+                logger.error(error_msg)
+                df.loc[df['link'] == paper_to_summarize['link'], 'ai_abstract'] = f"Error: {error_msg}"
+                df.to_csv(csv_file, index=False)
+                break
+                
+            except Exception as e:
+                logger.error(f"Unexpected error (attempt {attempt + 1}/{max_retries}): {str(e)}")
+                if attempt < max_retries - 1:
+                    wait_time = retry_delay * (attempt + 1)
+                    logger.info(f"Waiting {wait_time} seconds before retry...")
+                    time.sleep(wait_time)
+                else:
+                    logger.error("Max retries exceeded")
+                    df.loc[df['link'] == paper_to_summarize['link'], 'ai_abstract'] = f"Error: {str(e)}"
+                    df.to_csv(csv_file, index=False)
 
 if __name__ == "__main__":
     # Ensure new CSVs have ai_abstract, ai_summary columns
