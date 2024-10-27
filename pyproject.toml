@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "summarize-geoscience-papers"
+version = "0.1.0"
+description = "A tool to summarize geoscience papers using Google's Gemini AI"
+authors = ["Your Name <your.email@example.com>"]
+packages = [{include = "summarize"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+python-dotenv = "*"
+google-generativeai = "*"
+pandas = "*"
+apscheduler = "*"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
